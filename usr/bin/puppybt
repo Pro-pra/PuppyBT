@@ -1,0 +1,613 @@
+#!/bin/bash
+# version 05.06.18 
+#from Ddshurick BlueC repository
+
+export TEXTDOMAIN=puppybt
+. gettext.sh 
+
+err_msg () {
+ntf -a "$(gettext 'Error!')" "$1"
+exit 1
+}
+export -f err_msg
+
+[ -e /run/dbus/system_bus_socket ] || err_msg "$(gettext 'DBus \"System\" session not started, \ncheck you dbus launch script or service!')"
+
+for file in /sys/class/bluetooth/hci?
+do
+	[ -h "$file" ] || err_msg "$(gettext 'Local bluetooth device not found')"
+done
+ 
+if [ "$1" = "--noscan" ]; then 
+	#disable Discovery for fast restart gui, kill old gui window and script
+	NOSCAN=1
+else 
+	HCI_DEV=$1
+fi
+if [ "$HCI_DEV" = '' ]; then
+	if [ "$(ls -d1 /sys/class/bluetooth/hci? | wc -l)" = 1 ];then
+		HCI_DEV=$(basename $(ls -d /sys/class/bluetooth/hci?))
+	else
+		export check_hci_dev="
+<window><vbox>
+	<text><label>$(gettext 'Выберите из:')</label></text>
+	<list>
+		<variable>HCI_DEV</variable>
+		$(basename $(ls -d1 /sys/class/bluetooth/hci?) | sed 's/^/<item>/;s/$/<\/item>/')
+	</list>
+	<hbox>
+		<button yes></button>
+		<button no></button>
+	</hbox>
+</vbox></window>
+"
+	eval $(gtkdialog --program=check_hci_dev --center)
+	[ "$EXIT" = "Cancel" -o  "$EXIT" = "abort" -o "$HCI_DEV" = "" ] && err_msg "$(gettext 'Error!')"
+	fi
+fi
+
+[ "$(cat /sys/class/bluetooth/$HCI_DEV/rfkill?/hard)" = 0 ] || err_msg "$(gettext 'Local bluetooth device hard blocked')"
+[ "$(cat /sys/class/bluetooth/$HCI_DEV/rfkill?/soft)" = 0 ] || /usr/bin/rfkill unblock hci$N
+
+if [ "$(pidof bluetoothd)" = '' ]; then 
+	bluetoothd --compat --noplugin=hostname &
+fi
+
+bluez-tray $HCI_DEV up
+if [ $? = 1 ]; then 
+	err_msg "$(gettext 'Can`t power on controller!')"
+	exit
+fi
+
+#export DISPLAY=$(/bin/cat /tmp/dsp)
+
+# function for pair device
+PAIR () {
+local HCI_DEV=$1
+local BDA=$2
+local i=0
+while [ $i != 5 ]
+do
+	local DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
+	if [ "$DEV_PAIR" = "true" ]; then
+		btmgmt unpair $BDA
+		btmgmt del-device $BDA
+		# echo "remove $BDA" | bluetoothctl
+		local i=0
+		while [ $i != 6 ]
+		do
+			local DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
+			sleep 2
+			if [ "$DEV_PAIR" = "false" ]; then
+				ntf -i "$(gettext 'Device unpaired')" 
+				local PUPPYBT_PID=$(ps -C gtkdialog f | grep 'gtkdialog --program=show_bt' | awk '{print $1}')
+				kill $PUPPYBT_PID
+				puppybt --noscan &
+				return
+			fi
+		local i=$((i + 1))
+		done
+	elif [ "$DEV_PAIR" = "false" ]; then
+		dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Pair
+		#btmgmt pair $BDA
+		local i=0
+		while [ $i != 6 ]
+		do
+			local DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
+			sleep 2
+			if [ "$DEV_PAIR" = "true" ]; then
+				ntf -i "$(gettext 'Device paired')"
+				dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Set string:org.bluez.Device1 string:Trusted variant:boolean:true
+				local PUPPYBT_PID=$(ps -C gtkdialog f | grep 'gtkdialog --program=show_bt' | awk '{print $1}')
+				kill $PUPPYBT_PID
+				puppybt --noscan &
+				return
+			fi
+		local i=$((i + 1))
+		done
+	if [ "$DEV_PAIR" = 'false' ] || [ "$DEV_PAIR" = '' ]; then
+		ntf -e "$(gettext 'Error pair device')"
+		return
+	fi
+fi
+sleep 2
+local i=$((i + 1))
+done
+ntf -e "$(gettext 'Error read device pair status')"
+}
+export -f PAIR
+# function for send audio to remote device
+SPEAKER () {
+local HCI_DEV=$1
+local BDA=$2
+local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
+if [ "$CONNECTED" = "false" ]; then
+	[ "$(pgrep bluealsa)" = '' ] && bluealsa &
+	CONNECT $HCI_DEV $BDA
+	[ $? = 1 ] && return 
+fi
+
+# делаем бэкап файла если есть, заменяем файлом с прописанным устройством вывода на bluetooth
+# но если asound.bak уже есть, то не заменяем его.
+# использовать .asoundrc не получается т.к. скрипт делает настройку для root, а программы запущенные от пользователя 
+# продолжают выводить звук на звуковую карту
+
+if [ -e /etc/asound.conf ]; then 
+	if [ "$(grep $BDA /etc/asound.conf)" = '' ]; then 
+		mv -n /etc/asound.conf /etc/asound.bak
+	fi
+fi
+echo "#puppybt send to $BDA
+   pcm.!default {
+   type plug
+   slave.pcm {
+           type bluealsa
+           device \"$BDA\"
+           profile \"a2dp\"
+  }
+}
+ctl.!default {
+  type bluetooth
+  interface \"$HCI_DEV\"
+}" > /etc/asound.conf
+ntf -i "$(gettext 'All sound now send to bluetooth speaker')" "$(gettext 'for restore sound configuration disconnect device')"
+}
+export -f SPEAKER
+# function for test audio
+TESTAUDIO () {
+local HCI_DEV=$1
+local BDA=$2
+if [ "$(pgrep bluealsa)" = '' ]; then
+	ntf -e "$(gettext 'Bluealsa service not started')"; return
+fi
+
+if [ -e /usr/share/sounds/bt_test.wav ]; then
+	aplay /usr/share/sounds/bt_test.wav
+else
+	aplay /usr/share/sounds/alsa/ok.wav
+fi
+}
+export -f TESTAUDIO
+# remote control for remote device
+REMOTE_CONTROL ()
+{
+local HCI_DEV=$1
+local BDA=$2
+local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
+if [ "$CONNECTED" = "false" ]; then
+	CONNECT $HCI_DEV $BDA
+	[ $? = 1 ] && return 
+fi
+# здесь нужен запуск окна c элементами управления
+kill $(pgrep -f 'yad --text=Bluetooth')
+bt-av_remote $HCI_DEV $BDA &
+}
+export -f REMOTE_CONTROL
+# function for receive audio stream from remote device
+AUDIO_SOURCE ()
+{
+local HCI_DEV=$1
+local BDA=$2
+local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
+if [ "$CONNECTED" = "false" ]; then
+	CONNECT $HCI_DEV $BDA
+	[ $? = 1 ] && return 
+fi
+if [ "$(ps -C bluealsa-aplay f | grep $BDA)" = '' ]; then
+	bluealsa-aplay $BDA &
+	sleep2
+	if [ "$(ps -C bluealsa-aplay f | grep $BDA)" = '' ]; then
+		ntf -e "$(gettext 'Audio source connection failed')"
+	else
+		ntf -i "$(gettext 'Audio source device connected')"
+	fi
+else
+	local PID=$(ps -C bluealsa-aplay f | grep $BDA | awk '{print $1}') 
+	if [ "$PID" != '' ]; then
+		kill $PID
+		[ $? = 0 ] && ntf -i "$(gettext 'Audio source disconnected')"
+		dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Disconnect
+	else
+		ntf -i "$(gettext 'No connected Audio source')"
+	fi	
+fi
+}
+export -f AUDIO_SOURCE
+# function for connect-disconnect device  
+CONNECT ()
+{
+local HCI_DEV=$1
+local BDA=$2
+local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
+if [ "$CONNECTED" = "true" ]; then
+	dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Disconnect
+	
+	# kill bluelsa-aplay for device if exist
+	local PID=$(ps -C bluealsa-aplay f | grep $BDA | awk '{print $1}') 
+	if [ "$PID" != '' ]; then
+		kill $PID
+	fi	
+	# restore asound.conf
+	if [ -e /etc/asound.conf ]; then
+		grep --quiet "puppybt send to $BDA" /etc/asound.conf
+		if [ $? = 0 ]; then 
+			rm -f /etc/asound.conf
+			if [ -e /etc/asound.bak ]; then 
+				mv -f /etc/asound.bak /etc/asound.conf && rm -f /etc/asound.bak
+				ntf -i "$(gettext 'Sound settings restored')"
+			fi
+		fi
+	fi
+	ntf -i "$(gettext 'Device disconnected')"; return 0
+fi
+ntf -i "$(gettext 'Connect to device, please wait...')"
+dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Connect
+#wait connection
+local i=0
+while [ $i != 6 ]
+do
+	local CON_GOOD=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
+	sleep 2
+	if [ "$CON_GOOD" = "true" ]; then
+		ntf -i "$(gettext 'Device connected')"
+		if [ "$(pgrep bluealsa)" = '' ]; then
+			rm -f /var/run/bluealsa/* # clean bluealsa work dir
+			bluealsa &
+			sleep 2
+			[ "$(pgrep bluealsa)" = '' ] && ntf -e "$(gettext 'Start bluealsa service failed')"; return 1
+		fi
+		return 0
+	fi
+local i=$((i + 1))
+done
+	ntf -e "$(gettext 'Device connection failed')"; return 1 
+}
+export -f CONNECT
+# function for serial port connection
+CONNECT_SERIAL()
+{
+local BDA=$1
+local DIALUP=$2
+if [ "$DIALUP" = 'dialup' ]; then
+	# dialup channel
+	local CHANNEL=$(sdptool search --bdaddr $BDA 0x1103 | awk '/Channel:/ {print $2}')
+else
+	# serial channel
+	local CHANNEL=$(sdptool search --bdaddr $BDA 0x1101 | awk '/Channel:/ {print $2}')
+fi
+if [ "$(ps -C rfcomm f | grep "$BDA $CHANNEL")" = '' ]; then
+	local N=$(rfcomm -a | awk '/rfcomm/ {print $1}' | grep -Eo '[0-9]+' | sort -nk1 | tail -n 1)
+		if [ "$N" != '' ]; then
+			N=$((N + 1))
+		else
+			N=0
+		fi
+	ntf -i "$(gettext 'Connecting to serial port')"
+	#rfcomm bind 0 $BDA $CHANNEL 
+	rfcomm connect $N $BDA $CHANNEL &
+	sleep 5 # здесь надо ожидание пока пользователь подтвердит подключение
+	chmod 666 /dev/rfcomm$N
+	if [ "$(rfcomm show $N | grep -o connected)" = '' ]; then
+		ntf -e "$(gettext 'Serial port connection failed')"
+	else
+		ntf -i "$(gettext 'Serial port connected to /dev/rfcomm'$N'')"
+		if [ "$DIALUP" = 'dialup' ]; then
+			if [ "$(command -v gnome-ppp)" ]; then 
+				gnome-ppp &
+			else
+				defaultconnect &
+			fi
+		fi
+	fi
+else
+	local PID=$(ps -C rfcomm f | grep "$BDA $CHANNEL" | awk '{print $1}') 
+	if [ "$PID" != '' ]; then
+		kill $PID
+		[ $? = 0 ] && ntf -i "$(gettext 'Serial port disconnected')"
+	else
+		ntf -i "$(gettext 'No connection')"
+	fi
+fi
+}
+export -f CONNECT_SERIAL
+# receive files from remote device
+OBEX_RECEIVE()
+{
+# здесь надо обработать наличие запущенного obexpushd, если запущен, то выключаем, если не запущен - включаем
+if [ "$(pgrep 'obexd|obexpushd|bt-obex|obex-server-tool')" != '' ]; then
+	killall -q obexd obexpushd bt-obex obex-server-tool
+	ntf -i "$(gettext 'OBEX daemon stopped')"
+	return
+else
+	#надо определение каталога загрузки у пользователя, а то все к root будет записываться
+	# или может в /mnt/home/ делать каталог?
+	obexd -a -r /home/live/Downloads &
+	if [ $? = 0 ]; then 
+		ntf -i "$(gettext 'OBEX daemon started')" "$(gettext 'you files receive to /home/live/Downloads directory')"
+	else
+		ntf -e "$(gettext 'OBEX daemon failed')" "$(gettext 'OBEX daemon start failed!')"
+	fi
+fi	
+}
+export -f OBEX_RECEIVE
+# send files to remote device
+OBEX_PUSH()
+{
+# Открыть диалог выбора файлов
+local FILE=$(ntf -c "$(gettext 'Select file')") 
+if [ "$FILE" ]; then
+# получить данные об устройстве на который отправляем (mac, номер канала)
+	local BDA=$1
+#local CHANNEL=$(sdptool search --bdaddr $BDA 0x1105 | awk '/Channel:/ {print $2}')
+# проверить запущен ли obexd и запустить если не запущен т.к. нужен для работы bt-obex
+	if [ "$(pgrep obexd)" = '' ]; then
+		OBEX_RECEIVE
+		local KILL=1
+		sleep 2
+	fi
+# команда отправки файла:
+	ntf -i "$(gettext 'File transfer started')"
+	bt-obex --opp $BDA "$FILE" | stdbuf -o0 tr -s '\b' '\n' | stdbuf -o0 tr -d '[:blank:]' | yad --progress --auto-close --button=gtk-stop:"bash -c 'kill `ps -C bt-obex f | grep $BDA | awk '{print $1}'`'" --title="Puppybt" --text="$(gettext 'Send file to remote device')" --window-icon=/usr/share/pixmaps/bluetooth.png --borders=8
+
+# убираем прием файлов если он не был включен отдельно
+	[ "$KILL" = 1 ] && killall obexd
+else
+	ntf -i "$(gettext 'No file selected')"
+	return
+fi
+
+}
+export -f OBEX_PUSH
+#function mount remote device filesystem
+OBEX_MOUNT()
+{
+local BDA=$1
+local NAME="$(grep $BDA /tmp/btscan.lst | awk '{print substr($0,index($0,$2))}' | tr ' ' '_')"
+local CHANNEL=$(sdptool search --bdaddr $BDA 0x1106 | awk '/Channel:/ {print $2}')
+#Здесь проверка, если уже смонтировано, то размонтируем.
+if [ "$(ps -C obexfs f | grep $BDA)" = '' ]; then
+#алгоритм взят из Puppyrus bt-manager
+	[ ! -d /mnt/$NAME ] && mkdir /mnt/$NAME
+	obexfs  -b $BDA -B $CHANNEL /mnt/$NAME
+	sleep 5 # здесь надо ожидание пока пользователь подтвердит или отклонит подключение, либо по таймауту отключится
+	if [ "$(ps -C obexfs f | grep $BDA)" = '' ]; then 
+# второй вариант монтирования из Puppyrus bt-manager
+		obexfs -b $BDA -B $CHANNEL -N /mnt/$NAME
+		ntf -i "$(gettext 'Attempt to mount option two')"
+		sleep 5 # здесь надо ожидание пока пользователь подтвердит или отклонит подключение, либо по таймауту отключится
+		if [ "$(ps -C obexfs e | grep $BDA)" = '' ]; then 
+			ntf -e "$(gettext 'Error mount device to /mnt/'$NAME'')"
+			return
+		fi
+	fi
+	ntf -i "$(gettext 'Device mount to /mnt/'$NAME'')"
+	defaultfilemanager /mnt/$NAME &
+else
+	local MNT=$(ps -C obexfs f | grep "$BDA" | sed 's/.* \//\//;s/.* ~\//~\//;s/.* $HOME\/$HOME/\//'|cut -f1 -d' ')
+	umount $MNT
+	if [ $? = 0 ]; then
+		rm -d $MNT && ntf -i "$(gettext 'Device '$MNT' unmounted')"
+	elif [ "$(grep $MNT /proc/mounts)" = '' ]; then 
+		rm -d $MNT && ntf -i "$(gettext 'Directory '$MNT' deleted')"
+	else
+		ntf -e "$(gettext 'Error delete '$MNT'')" "$(gettext 'may be directory not empty?')"
+	fi
+fi
+
+}
+export -f OBEX_MOUNT
+#function network connection 
+NET_CONNECT () 
+{
+local HCI_DEV=$1
+local BDA=$2
+local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Network1 string:Connected | grep -E -o 'true|false')
+if [ "$CONNECTED" = "true" ]; then
+	dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Network1.Disconnect
+	ntf -i "$(gettext 'Device disconnected')"
+	return
+elif  [ "$CONNECTED" = "false" ]; then
+	# uuid can be either one of "gn", "panu" or "nap" (case	insensitive) or a traditional string representation of UUID or a hexadecimal number.
+	dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Network1.Connect string:0x1117
+	sleep 5
+	local CON_GOOD=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Network1 string:Connected | grep -E -o 'true|false')
+	if [ "$CON_GOOD" = "true" ]; then 
+		local NET_DEV=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Network1 string:Interface)
+		ntf -w "$(gettext 'Device connected')" "$(gettext 'configure you connection with '$NET_DEV'')"
+		defaultconnect &
+		return 
+	fi
+	ntf -e "$(gettext 'Device connection failed')" 
+fi
+
+}
+export -f NET_CONNECT
+
+if [ "$NOSCAN" = '' ]; then 
+	dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StartDiscovery
+	export process="<window decorated=\"false\">
+		<pixmap><input file>/usr/share/pixmaps/process.gif</input></pixmap>
+		<timer interval=\"12\" visible=\"false\">
+			<action function=\"exit\">process</action>
+		</timer>
+	</window>
+	"
+	gtkdialog -c --program=process &
+	PID=$!
+
+	bt-scan
+	#btmgmt find | grep 'dev_found\|name' > /tmp/btdev.lst
+	#StopDiscovery method not work now. Search new way to stop it
+	dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StopDiscovery
+	#check invisible connected device
+	dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects | grep -o '..:..:..:..:..:..' | grep -v $HCI_DEV | while read DBUS_BDA
+	do
+		CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $DBUS_BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
+		if [ "$CONNECTED" = "true" ]; then
+			if grep -q $DBUS_BDA /tmp/btscan.lst; then
+				echo "Found in Dbus not connected $DBUS_BDA"
+			else
+			#but if dbus send error message, we will have an incorrect device name!!! 
+				DBUS_NAME=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $DBUS_BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Name | grep '".*"' | awk -F\" '{print $2}')
+				printf "%b\\n" "$DBUS_BDA\\t$DBUS_NAME" >> /tmp/btscan.lst
+			fi
+		fi
+	done
+		if [ ! -s /tmp/btscan.lst ]; then 
+			/bin/kill $PID
+			#StopDiscovery method not work now. Search new way to stop it
+			dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StopDiscovery
+			ntf -a "$(gettext 'Puppy bluetooth manager')" "$(gettext 'Remote bluetooth devices not found')"
+			exit
+		fi
+fi
+: > /tmp/panel
+grep -o '..:..:..:..:..:..' /tmp/btscan.lst | while read BDA
+do
+echo "<vbox>" >> /tmp/panel
+#check pair-nonpair device status
+#sometimes the request does not work the first time, a second request is required
+DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
+if [ "$DEV_PAIR" = '' ]; then
+	sleep 2
+	DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
+fi
+if [ "$DEV_PAIR" = "true" ]; then 
+echo "<frame>
+	<hbox>
+		<text use-markup=\"true\">
+		<label>\"$(gettext '<b>Paired</b>')\"</label>
+		</text>
+		<button>
+			<input file stock=\"gtk-remove\"></input>
+			<label>$(gettext 'Unpair')</label>
+  			<action>\"PAIR $HCI_DEV $BDA &\"</action>
+		</button>
+		<button>
+			<input file stock=\"gtk-connect\"></input>
+			<label>$(gettext 'Connect/Disconnect')</label>
+  			<action>\"CONNECT $HCI_DEV $BDA &\"</action>
+		</button>
+	</hbox>
+</frame>" >> /tmp/panel
+elif [ "$DEV_PAIR" = "false" ] || [ "$DEV_PAIR" = '' ]; then
+echo "<frame>
+	<hbox>
+		<text use-markup=\"true\">
+		<label>\"<span color='#FF0000'>$(gettext '<b>Not paired</b>')</span>\"</label>
+		</text>
+		<button width-request=\"90\">
+			<input file stock=\"gtk-add\"></input>
+			<label>$(gettext 'Pair auto')</label>
+  			<action>\"PAIR $HCI_DEV $BDA &\"</action>
+		</button>
+		<button width-request=\"100\">
+			<input file stock=\"gtk-add\"></input>
+			<label>$(gettext 'Pair manual')</label>
+  			<action>ntf -w \"$(gettext 'Manual pair with device '$BDA'')\" \"$(gettext ' input string in therminal:\\n pair '$BDA'\\n and close therminal window')\"</action>
+			<action>defaultterminal -e bluetoothctl</action>
+		</button>
+	</hbox>
+</frame>" >> /tmp/panel
+fi
+
+#check and add available device service
+dbus-send --system --print-reply --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:UUIDs | grep -E -o '"+[0-9|a-f]{8}-' | cut -c 6-9 > /tmp/${BDA}-info.lst || continue
+# if device not pair, service info not available on dbus, discovery service via sdptool
+if [ ! -s /tmp/${BDA}-info.lst ]; then
+	sdptool browse $BDA | awk -F[\(\)] '/0x11/ {print $2}'| sort -u | cut -c 3-6 > /tmp/${BDA}-info.lst || continue
+	
+fi
+	while read S 
+	do
+#	 CH=$(grep -A4 $S /tmp/${BDA}-info.lst | awk '/Channel/ {print $2}')
+	case $S in
+1101) echo "<frame Serial Port>
+ <button><label>$(gettext 'Connect/Disconnect')</label>
+ 	<input file stock=\"gtk-connect\"></input>
+ 	<action>\"CONNECT_SERIAL $BDA &\"</action>
+ </button>
+</frame>" >> /tmp/panel ;;
+1103) echo "<frame Dialup Networking>
+ <button><label>$(gettext 'Connect/Disconnect')</label>
+ 	<input file stock=\"gtk-network\"></input>
+ 	<action>\"CONNECT_SERIAL $BDA dialup &\"</action>
+ </button>
+</frame>" >> /tmp/panel ;;
+1105) echo "<frame OBEX Object Push>
+ <hbox>
+ <button><label>$(gettext 'Send files')</label>
+ 	<input file stock=\"gtk-add\"></input>
+ 	<action>\"OBEX_PUSH $BDA &\"</action>
+ </button>
+ <button><label>$(gettext 'Start/Stop receive')</label>
+ 	<input file stock=\"gtk-save\"></input>
+ 	<action>OBEX_RECEIVE &</action>
+ </button>
+ </hbox>
+</frame>" >> /tmp/panel 
+;;
+1106) echo "<frame OBEX File Transfer>
+ <button><label>$(gettext 'Mount/Unmount file system')</label>
+ 	<input file stock=\"gtk-harddisk\"></input>
+ 	<action>\"OBEX_MOUNT $BDA &\"</action>
+ </button>
+</frame>" >> /tmp/panel  
+;;
+1112 | 110b) echo "<frame Audio Sink or Gateway (a2dp)>
+ <button><label>$(gettext 'Stream sound to device')</label>
+ 	<input file stock=\"gtk-connect\"></input>
+	<action>SPEAKER $HCI_DEV $BDA &</action>
+ </button>
+ <button><label>$(gettext 'Play test sound')</label>
+ 	<input file stock=\"gtk-media-play\"></input>
+	<action>TESTAUDIO $HCI_DEV $BDA &</action>
+</button>
+</frame>" >> /tmp/panel ;;
+#111f) echo "<frame Handsfree Audio Gateway>
+# <button><label>$(gettext 'not yet implemented')</label>
+# </button>
+#</frame>" >> /tmp/panel ;;
+0x110a) echo "<frame Audio Source>
+ <button><label>$(gettext 'Receive audio from device')</label>
+ 	<input file stock=\"gtk-media-play\"></input>
+ 	<action>\"AUDIO_SOURCE $HCI_DEV $BDA &\"</action>
+ </button>
+</frame>" >> /tmp/panel ;;
+110c | 110f) echo "<frame AV Remote Control Target>
+ <button><label>$(gettext 'AV remote')</label>
+ 	<input file stock=\"gtk-open\"></input>
+ 	<action>\"REMOTE_CONTROL $HCI_DEV $BDA &\"</action>
+ </button>
+</frame>" >> /tmp/panel ;;
+110e) echo "<frame AV Remote Control>
+ <button><label>$(gettext 'AV remote')</label>
+ 	<input file stock=\"gtk-open\"></input>
+ 	<action>\"REMOTE_CONTROL $HCI_DEV $BDA &\"</action>
+ </button>
+</frame>" >> /tmp/panel ;;
+1115 | 1116 | 1117) echo "<frame Personal Area Networking (PAN)>
+ <button><label>$(gettext 'Personal Area Networking')</label>
+ 	<input file stock=\"gtk-network\"></input>
+ 	<action>\"NET_CONNECT $HCI_DEV $BDA &\"</action>
+ </button>
+</frame>" >> /tmp/panel ;;
+# и т д
+		esac
+	done < /tmp/${BDA}-info.lst
+ echo "</vbox>" >> /tmp/panel
+done 
+
+ export show_bt="
+<window title=\"$(gettext 'Bluetooth manager')\" icon-name=\"gtk-about\">
+	<frame $(gettext 'Bluetooth devices')>
+		<notebook labels=\"$(awk '{print substr($0,index($0,$2))}' /tmp/btscan.lst | tr '\n' '|')\">
+			$(cat /tmp/panel)
+		</notebook>
+	</frame>
+</window>
+" 
+[ -s /tmp/panel ] || err_msg "$(gettext 'Bluetooth services not found.')"
+
+#gtkdialog --program=show_bt --center || err_msg "$(gettext 'Error in puppybt script!')"
+gtkdialog --program=show_bt --center 
