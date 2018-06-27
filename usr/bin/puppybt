@@ -125,6 +125,10 @@ if [ "$CONNECTED" = "false" ]; then
 	[ "$(pgrep bluealsa)" = '' ] && bluealsa &
 	CONNECT $HCI_DEV $BDA
 	[ $? = 1 ] && return 
+elif [ "$CONNECTED" = "true" ]; then
+#disconnect device if connected
+	CONNECT $HCI_DEV $BDA
+	return
 fi
 
 # делаем бэкап файла если есть, заменяем файлом с прописанным устройством вывода на bluetooth
@@ -242,6 +246,12 @@ if [ "$CONNECTED" = "true" ]; then
 fi
 ntf -i "$(gettext 'Connect to device, please wait...')"
 dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Connect
+if [ "$(pgrep bluealsa)" = '' ]; then
+			rm -f /var/run/bluealsa/* # clean bluealsa work dir
+			bluealsa &
+			sleep 2
+			[ "$(pgrep bluealsa)" = '' ] && ntf -e "$(gettext 'Start bluealsa service failed')"
+fi
 #wait connection
 local i=0
 while [ $i != 6 ]
@@ -250,12 +260,6 @@ do
 	sleep 2
 	if [ "$CON_GOOD" = "true" ]; then
 		ntf -i "$(gettext 'Device connected')"
-		if [ "$(pgrep bluealsa)" = '' ]; then
-			rm -f /var/run/bluealsa/* # clean bluealsa work dir
-			bluealsa &
-			sleep 2
-			[ "$(pgrep bluealsa)" = '' ] && ntf -e "$(gettext 'Start bluealsa service failed')"; return 1
-		fi
 		return 0
 	fi
 local i=$((i + 1))
