@@ -431,7 +431,7 @@ fi
 export -f NET_CONNECT
 
 if [ "$NOSCAN" = '' ]; then 
-	dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StartDiscovery
+	#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StartDiscovery
 	export process="<window decorated=\"false\">
 		<pixmap><input file>/usr/share/pixmaps/process.gif</input></pixmap>
 		<timer interval=\"12\" visible=\"false\">
@@ -441,11 +441,13 @@ if [ "$NOSCAN" = '' ]; then
 	"
 	gtkdialog -c --program=process &
 	PID=$!
-
+	#bluetoothctl in non-interactive mode, discovery stop after timeout
+	bluetoothctl --timeout 8 scan on
+	bluetoothctl scan off #may be not needed
 	bt-scan
 	#btmgmt find | grep 'dev_found\|name' > /tmp/btdev.lst
 	#StopDiscovery method not work now. Search new way to stop it
-	dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StopDiscovery
+	#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StopDiscovery
 	#check invisible connected device
 	dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects | grep -o '..:..:..:..:..:..' | grep -v $HCI_DEV | while read DBUS_BDA
 	do
@@ -463,7 +465,7 @@ if [ "$NOSCAN" = '' ]; then
 		if [ ! -s /tmp/btscan.lst ]; then 
 			/bin/kill $PID
 			#StopDiscovery method not work now. Search new way to stop it
-			dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StopDiscovery
+			#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StopDiscovery
 			ntf -a "$(gettext 'Puppy bluetooth manager')" "$(gettext 'Remote bluetooth devices not found')"
 			exit
 		fi
