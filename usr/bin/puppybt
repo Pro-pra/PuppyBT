@@ -11,8 +11,6 @@ exit 1
 }
 export -f err_msg
 
-[ -e /run/dbus/system_bus_socket ] || err_msg "$(gettext 'DBus \"System\" session not started, \ncheck you dbus launch script or service!')"
-
 for file in /sys/class/bluetooth/hci?
 do
 	[ -h "$file" ] || err_msg "$(gettext 'Local bluetooth device not found')"
@@ -51,6 +49,11 @@ fi
 
 if [ "$(pidof bluetoothd)" = '' ]; then 
 	bluetoothd --compat --noplugin=hostname &
+	sleep 2
+	if [ "$(pidof bluetoothd)" = '' ]; then
+		err_msg "$(gettext 'Unable to run bluetoothd daemon, please run \nbluetoothd in therminal and check errors.')"
+		exit
+	fi
 fi
 
 bluez-tray $HCI_DEV up
