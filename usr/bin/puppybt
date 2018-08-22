@@ -68,14 +68,15 @@ fi
 PAIR () {
 local HCI_DEV=$1
 local BDA=$2
-local i=0
-while [ $i != 5 ]
-do
+#local i=0
+#while [ $i != 5 ]
+#do
 	local DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
 	if [ "$DEV_PAIR" = "true" ]; then
-		btmgmt unpair $BDA
-		btmgmt del-device $BDA
-		# echo "remove $BDA" | bluetoothctl
+		#btmgmt unpair $BDA
+		#btmgmt del-device $BDA
+		bluetoothctl --timeout=2 disconnect $BDA
+		bluetoothctl remove $BDA
 		local i=0
 		while [ $i != 6 ]
 		do
@@ -91,8 +92,9 @@ do
 		local i=$((i + 1))
 		done
 	elif [ "$DEV_PAIR" = "false" ]; then
-		dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Pair
+		#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Pair
 		#btmgmt pair $BDA
+		bluetoothctl pair $BDA
 		local i=0
 		while [ $i != 6 ]
 		do
@@ -113,9 +115,9 @@ do
 		return
 	fi
 fi
-sleep 2
-local i=$((i + 1))
-done
+#sleep 2
+#local i=$((i + 1))
+#done
 ntf -e "$(gettext 'Error read device pair status')"
 }
 export -f PAIR
