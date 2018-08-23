@@ -519,7 +519,7 @@ echo "<frame>
 		<button width-request=\"100\">
 			<input file stock=\"gtk-add\"></input>
 			<label>$(gettext 'Pair manual')</label>
-  			<action>ntf -w \"$(gettext 'Manual pair with device '$BDA'')\" \"$(gettext ' input string in therminal:\\n pair '$BDA'\\n and close therminal window')\"</action>
+  			<action>ntf -w \"$(gettext 'Manual pair with device '$BDA'')\" \"$(gettext ' input string in therminal:\\n pair '$BDA'\\n and close therminal window')\" &</action>
 			<action>defaultterminal -e bluetoothctl</action>
 		</button>
 	</hbox>
