@@ -233,8 +233,8 @@ local HCI_DEV=$1
 local BDA=$2
 local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
 if [ "$CONNECTED" = "true" ]; then
-	dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Disconnect
-	
+	#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Disconnect
+	bluetoothctl disconnect $BDA
 	# kill bluelsa-aplay for device if exist
 	local PID=$(ps -C bluealsa-aplay f | grep $BDA | awk '{print $1}') 
 	if [ "$PID" != '' ]; then
@@ -254,7 +254,8 @@ if [ "$CONNECTED" = "true" ]; then
 	ntf -i "$(gettext 'Device disconnected')"; return 0
 fi
 ntf -i "$(gettext 'Connect to device, please wait...')"
-dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Connect
+#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Connect
+bluetoothctl connect $BDA
 if [ "$(pgrep bluealsa)" = '' ]; then
 			rm -f /var/run/bluealsa/* # clean bluealsa work dir
 			bluealsa &
