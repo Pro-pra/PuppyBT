@@ -96,9 +96,9 @@ local BDA=$2
 		#local i=$((i + 1))
 		#done
 	elif [ "$DEV_PAIR" = "false" ]; then
-		#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Pair
+		dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Pair
 		#btmgmt pair $BDA
-		bluetoothctl pair $BDA
+		#bluetoothctl pair $BDA #not work
 		local i=0
 		while [ $i != 6 ]
 		do
