@@ -471,8 +471,7 @@ if [ "$NOSCAN" = '' ]; then
 	done
 		if [ ! -s /tmp/btscan.lst ]; then 
 			/bin/kill $PID
-			#StopDiscovery method not work now. Search new way to stop it
-			#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StopDiscovery
+			bluetoothctl scan off
 			ntf -a "$(gettext 'Puppy bluetooth manager')" "$(gettext 'Remote bluetooth devices not found')"
 			exit
 		fi
