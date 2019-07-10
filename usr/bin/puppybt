@@ -1,5 +1,5 @@
 #!/bin/bash
-# version 05.06.18 
+# version 10.07.19 
 #from Ddshurick BlueC repository
 
 export TEXTDOMAIN=puppybt
@@ -450,28 +450,25 @@ if [ "$NOSCAN" = '' ]; then
 	PID=$!
 	#bluetoothctl in non-interactive mode, discovery stop after timeout
 	bluetoothctl --timeout 8 scan on
-	bluetoothctl scan off #may be not needed
+	bluetoothctl scan off 2>&1>/dev/null #may be not needed
 	bt-scan
-	#btmgmt find | grep 'dev_found\|name' > /tmp/btdev.lst
-	#StopDiscovery method not work now. Search new way to stop it
-	#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StopDiscovery
 	#check invisible connected device
-	dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects | grep -o '..:..:..:..:..:..' | grep -v $HCI_DEV | while read DBUS_BDA
+	dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects 2>/dev/null | grep -o '..:..:..:..:..:..' | grep -v $HCI_DEV | while read DBUS_BDA
 	do
-		CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $DBUS_BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
+		CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $DBUS_BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected 2>/dev/null | grep -E -o 'true|false')
 		if [ "$CONNECTED" = "true" ]; then
 			if grep -q $DBUS_BDA /tmp/btscan.lst; then
-				echo "Found in Dbus not connected $DBUS_BDA"
+				echo "Found in Dbus $DBUS_BDA"
 			else
 			#but if dbus send error message, we will have an incorrect device name!!! 
-				DBUS_NAME=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $DBUS_BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Name | grep '".*"' | awk -F\" '{print $2}')
+				DBUS_NAME=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $DBUS_BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Name 2>dev/null | grep '".*"' | awk -F\" '{print $2}')
 				printf "%b\\n" "$DBUS_BDA\\t$DBUS_NAME" >> /tmp/btscan.lst
 			fi
 		fi
 	done
 		if [ ! -s /tmp/btscan.lst ]; then 
-			/bin/kill $PID
-			bluetoothctl scan off
+			/bin/kill $PID 2>/dev/null
+			bluetoothctl scan off 2>&1 >/dev/null
 			ntf -a "$(gettext 'Puppy bluetooth manager')" "$(gettext 'Remote bluetooth devices not found')"
 			exit
 		fi
