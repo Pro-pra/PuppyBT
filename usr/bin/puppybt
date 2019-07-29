@@ -1,5 +1,5 @@
 #!/bin/bash
-# version 10.07.19 
+# version 25.07.19 
 #from Ddshurick BlueC repository
 
 export TEXTDOMAIN=puppybt
@@ -13,7 +13,7 @@ export -f err_msg
 
 for file in /sys/class/bluetooth/hci?
 do
-	[ -h "$file" ] || err_msg "$(gettext 'Local bluetooth device not found')"
+	[ -h "$file" ] || err_msg "$(gettext 'Bluetooth controller not found')"
 done
  
 if [ "$1" = "--noscan" ]; then 
@@ -22,6 +22,7 @@ if [ "$1" = "--noscan" ]; then
 else 
 	HCI_DEV=$1
 fi
+
 if [ "$HCI_DEV" = '' ]; then
 	if [ "$(ls -d1 /sys/class/bluetooth/hci? | wc -l)" = 1 ];then
 		HCI_DEV=$(basename $(ls -d /sys/class/bluetooth/hci?))
@@ -44,7 +45,7 @@ if [ "$HCI_DEV" = '' ]; then
 	fi
 fi
 
-[ "$(cat /sys/class/bluetooth/$HCI_DEV/rfkill?/hard)" = 0 ] || err_msg "$(gettext 'Local bluetooth device hard blocked')"
+[ "$(cat /sys/class/bluetooth/$HCI_DEV/rfkill?/hard)" = 0 ] || err_msg "$(gettext 'Bluetooth controller not found or hard blocked')"
 [ "$(cat /sys/class/bluetooth/$HCI_DEV/rfkill?/soft)" = 0 ] || /usr/bin/rfkill unblock hci$N
 
 if [ "$(pidof bluetoothd)" = '' ]; then 
@@ -56,85 +57,77 @@ if [ "$(pidof bluetoothd)" = '' ]; then
 	fi
 fi
 
+HCI_DEV_ADDR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.freedesktop.DBus.Properties.Get string:org.bluez.Adapter1 string:Address | grep -o '..:..:..:..:..:..')
+bluetoothctl select $HCI_DEV_ADDR
+#bluetoothctl power on
 bluez-tray $HCI_DEV up
 if [ $? = 1 ]; then 
 	err_msg "$(gettext 'Can`t power on controller!')"
 	exit
 fi
 
-#export DISPLAY=$(/bin/cat /tmp/dsp)
-
 # function for pair device
 PAIR () {
 local HCI_DEV=$1
 local BDA=$2
-#local i=0
-#while [ $i != 5 ]
-#do
-	local DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
-	if [ "$DEV_PAIR" = "true" ]; then
-		#btmgmt unpair $BDA
-		#btmgmt del-device $BDA
-		bluetoothctl --timeout=2 disconnect $BDA
+	#local DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
+	local DEV_PAIR=$(bluetoothctl info $BDA | grep Paired |cut -d' ' -f2)
+	if [ "$DEV_PAIR" = "yes" ]; then
+		if [ $(bluetoothctl info $BDA | grep Connected |cut -d' ' -f2) = yes ]; then
+		    bluetoothctl --timeout=2 disconnect $BDA
+		fi
 		bluetoothctl remove $BDA
-		#local i=0
-		#while [ $i != 6 ]
-		#do
-		#	local DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
-		#	sleep 2
-		#	if [ "$DEV_PAIR" = "false" ]; then
 			if [ $? = 0 ]; then
 				ntf -i "$(gettext 'Device unpaired')" 
 				local PUPPYBT_PID=$(ps -C gtkdialog f | grep 'gtkdialog --program=show_bt' | awk '{print $1}')
 				kill $PUPPYBT_PID
 				puppybt --noscan &
-				return
+				exit
 			else
 				ntf -e "$(gettext 'Error unpair device')"
 				return
 			fi
-		#local i=$((i + 1))
-		#done
-	elif [ "$DEV_PAIR" = "false" ]; then
-		dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Pair
-		#btmgmt pair $BDA
-		#bluetoothctl pair $BDA #not work
+	elif [ "$DEV_PAIR" = "no" ]; then
+		#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Pair
+		bluetoothctl --agent=NoInputNoOutput pair $BDA
 		local i=0
 		while [ $i != 6 ]
 		do
-			local DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
+			#local DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
+			local DEV_PAIR=$(bluetoothctl info $BDA | grep Paired |cut -d' ' -f2)
 			sleep 2
-			if [ "$DEV_PAIR" = "true" ]; then
+			if [ "$DEV_PAIR" = "yes" ]; then
 				ntf -i "$(gettext 'Device paired')"
-				dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Set string:org.bluez.Device1 string:Trusted variant:boolean:true
+				#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Set string:org.bluez.Device1 string:Trusted variant:boolean:true
+				bluetoothctl trust $BDA
 				local PUPPYBT_PID=$(ps -C gtkdialog f | grep 'gtkdialog --program=show_bt' | awk '{print $1}')
 				kill $PUPPYBT_PID
 				puppybt --noscan &
-				return
+				exit
 			fi
 		local i=$((i + 1))
 		done
-	if [ "$DEV_PAIR" = 'false' ] || [ "$DEV_PAIR" = '' ]; then
+	if [ "$DEV_PAIR" = 'no' ] || [ "$DEV_PAIR" = '' ]; then
 		ntf -e "$(gettext 'Error pair device')"
 		return
 	fi
 fi
-#sleep 2
-#local i=$((i + 1))
-#done
 ntf -e "$(gettext 'Error read device pair status')"
 }
 export -f PAIR
+
 # function for send audio to remote device
 SPEAKER () {
 local HCI_DEV=$1
 local BDA=$2
-local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
-if [ "$CONNECTED" = "false" ]; then
-	[ "$(pgrep bluealsa)" = '' ] && bluealsa &
+local CONNECTED=$(bluetoothctl info $BDA | grep Connected |cut -d' ' -f2)
+if [ "$CONNECTED" = "no" ]; then
+	local ALSA_VERSION=$(alsactl --version | cut -d' ' -f3)
+	[ $ALSA_VERSION \> 1.1.2 ] && ALSA_NEW="LIBASOUND_THREAD_SAFE=0" #may be need export for this
+	[ "$(pgrep bluealsa)" = '' ] && $ALSA_NEW bluealsa &
 	CONNECT $HCI_DEV $BDA
 	[ $? = 1 ] && return 
-elif [ "$CONNECTED" = "true" ]; then
+elif [ "$CONNECTED" = "yes" ]; then
 #disconnect device if connected
 	CONNECT $HCI_DEV $BDA
 	return
@@ -186,8 +179,8 @@ REMOTE_CONTROL ()
 {
 local HCI_DEV=$1
 local BDA=$2
-local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
-if [ "$CONNECTED" = "false" ]; then
+local CONNECTED=$(bluetoothctl info $BDA | grep Connected |cut -d' ' -f2)
+if [ "$CONNECTED" = "no" ]; then
 	CONNECT $HCI_DEV $BDA
 	[ $? = 1 ] && return 
 fi
@@ -201,8 +194,8 @@ AUDIO_SOURCE ()
 {
 local HCI_DEV=$1
 local BDA=$2
-local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
-if [ "$CONNECTED" = "false" ]; then
+local CONNECTED=$(bluetoothctl info $BDA | grep Connected |cut -d' ' -f2)
+if [ "$CONNECTED" = "no" ]; then
 	CONNECT $HCI_DEV $BDA
 	[ $? = 1 ] && return 
 fi
@@ -219,7 +212,7 @@ else
 	if [ "$PID" != '' ]; then
 		kill $PID
 		[ $? = 0 ] && ntf -i "$(gettext 'Audio source disconnected')"
-		dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Disconnect
+		bluetoothctl disconnect $BDA
 	else
 		ntf -i "$(gettext 'No connected Audio source')"
 	fi	
@@ -231,8 +224,8 @@ CONNECT ()
 {
 local HCI_DEV=$1
 local BDA=$2
-local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
-if [ "$CONNECTED" = "true" ]; then
+local CONNECTED=$(bluetoothctl info $BDA | grep Connected |cut -d' ' -f2)
+if [ "$CONNECTED" = "yes" ]; then
 	#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Device1.Disconnect
 	bluetoothctl disconnect $BDA
 	# kill bluelsa-aplay for device if exist
@@ -258,7 +251,9 @@ ntf -i "$(gettext 'Connect to device, please wait...')"
 bluetoothctl connect $BDA
 if [ "$(pgrep bluealsa)" = '' ]; then
 			rm -f /var/run/bluealsa/* # clean bluealsa work dir
-			bluealsa &
+			local ALSA_VERSION=$(alsactl --version | cut -d' ' -f3)
+			[ $ALSA_VERSION \> 1.1.2 ] && ALSA_NEW="LIBASOUND_THREAD_SAFE=0" #may be need export for this
+			$ALSA_NEW bluealsa &
 			sleep 2
 			[ "$(pgrep bluealsa)" = '' ] && ntf -e "$(gettext 'Start bluealsa service failed')"
 fi
@@ -266,9 +261,9 @@ fi
 local i=0
 while [ $i != 6 ]
 do
-	local CON_GOOD=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected | grep -E -o 'true|false')
+	local CON_GOOD=$(bluetoothctl info $BDA | grep Connected |cut -d' ' -f2)
 	sleep 2
-	if [ "$CON_GOOD" = "true" ]; then
+	if [ "$CON_GOOD" = "yes" ]; then
 		ntf -i "$(gettext 'Device connected')"
 		return 0
 	fi
@@ -280,6 +275,7 @@ export -f CONNECT
 # function for serial port connection
 CONNECT_SERIAL()
 {
+#may be need use btattach for serial connection
 local BDA=$1
 local DIALUP=$2
 if [ "$DIALUP" = 'dialup' ]; then
@@ -413,19 +409,20 @@ export -f OBEX_MOUNT
 #function network connection 
 NET_CONNECT () 
 {
+#may be need use bneptest for bnep network connection, client and server role
 local HCI_DEV=$1
 local BDA=$2
-local CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Network1 string:Connected | grep -E -o 'true|false')
-if [ "$CONNECTED" = "true" ]; then
+local CONNECTED=$(bluetoothctl info $BDA | grep Connected |cut -d' ' -f2)
+if [ "$CONNECTED" = "yes" ]; then
 	dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Network1.Disconnect
 	ntf -i "$(gettext 'Device disconnected')"
 	return
-elif  [ "$CONNECTED" = "false" ]; then
+elif  [ "$CONNECTED" = "no" ]; then
 	# uuid can be either one of "gn", "panu" or "nap" (case	insensitive) or a traditional string representation of UUID or a hexadecimal number.
 	dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.bluez.Network1.Connect string:0x1117
 	sleep 5
-	local CON_GOOD=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Network1 string:Connected | grep -E -o 'true|false')
-	if [ "$CON_GOOD" = "true" ]; then 
+	local CON_GOOD=$(bluetoothctl info $BDA | grep Connected |cut -d' ' -f2)
+	if [ "$CON_GOOD" = "yes" ]; then 
 		local NET_DEV=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Network1 string:Interface)
 		ntf -w "$(gettext 'Device connected')" "$(gettext 'configure you connection with '$NET_DEV'')"
 		defaultconnect &
@@ -438,53 +435,39 @@ fi
 export -f NET_CONNECT
 
 if [ "$NOSCAN" = '' ]; then 
-	#dbus-send --system --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV org.bluez.Adapter1.StartDiscovery
 	export process="<window decorated=\"false\">
 		<pixmap><input file>/usr/share/pixmaps/process.gif</input></pixmap>
-		<timer interval=\"12\" visible=\"false\">
+		<timer interval=\"10\" visible=\"false\">
 			<action function=\"exit\">process</action>
 		</timer>
 	</window>
 	"
 	gtkdialog -c --program=process &
 	PID=$!
-	#bluetoothctl in non-interactive mode, discovery stop after timeout
-	bluetoothctl --timeout 8 scan on
-	bluetoothctl scan off 2>&1>/dev/null #may be not needed
-	bt-scan
-	#check invisible connected device
-	dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects 2>/dev/null | grep -o '..:..:..:..:..:..' | grep -v $HCI_DEV | while read DBUS_BDA
-	do
-		CONNECTED=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $DBUS_BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Connected 2>/dev/null | grep -E -o 'true|false')
-		if [ "$CONNECTED" = "true" ]; then
-			if grep -q $DBUS_BDA /tmp/btscan.lst; then
-				echo "Found in Dbus $DBUS_BDA"
-			else
-			#but if dbus send error message, we will have an incorrect device name!!! 
-				DBUS_NAME=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $DBUS_BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Name 2>dev/null | grep '".*"' | awk -F\" '{print $2}')
-				printf "%b\\n" "$DBUS_BDA\\t$DBUS_NAME" >> /tmp/btscan.lst
-			fi
-		fi
-	done
-		if [ ! -s /tmp/btscan.lst ]; then 
-			/bin/kill $PID 2>/dev/null
-			bluetoothctl scan off 2>&1 >/dev/null
-			ntf -a "$(gettext 'Puppy bluetooth manager')" "$(gettext 'Remote bluetooth devices not found')"
-			exit
-		fi
+	
+	#bt-scan
+	bluetoothctl --timeout=8 scan on
+	bluetoothctl devices | awk '{print substr($0,index($0,$2))}' > /tmp/btscan.lst
+	if [ ! -s /tmp/btscan.lst ]; then 
+		/bin/kill $PID 2>/dev/null
+		ntf -a "$(gettext 'Puppy bluetooth manager')" "$(gettext 'Remote bluetooth devices not found')"
+		exit
+	fi
+	
 fi
 : > /tmp/panel
 grep -o '..:..:..:..:..:..' /tmp/btscan.lst | while read BDA
 do
-echo "<vbox>" >> /tmp/panel
+echo "Found device $BDA"
 #check pair-nonpair device status
-#sometimes the request does not work the first time, a second request is required
-DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
-if [ "$DEV_PAIR" = '' ]; then
-	sleep 2
-	DEV_PAIR=$(dbus-send --system --print-reply --type=method_call --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:Paired | grep -E -o 'true|false')
-fi
-if [ "$DEV_PAIR" = "true" ]; then 
+DEV_PAIR=$(bluetoothctl info $BDA | grep Paired |cut -d ' ' -f2)
+if [ "$DEV_PAIR" = "yes" ]; then 
+
+#check availability for device, use l2ping
+l2ping -i $HCI_DEV -c 2 $BDA > /dev/null 2>&1
+[ $? = 1 ] && continue
+echo "Device $BDA paired and available"
+echo "<vbox>" >> /tmp/panel
 echo "<frame>
 	<hbox>
 		<text use-markup=\"true\">
@@ -493,46 +476,19 @@ echo "<frame>
 		<button>
 			<input file stock=\"gtk-remove\"></input>
 			<label>$(gettext 'Unpair')</label>
-  			<action>\"PAIR $HCI_DEV $BDA &\"</action>
+			<action>\"PAIR $HCI_DEV $BDA &\"</action>
 		</button>
 		<button>
 			<input file stock=\"gtk-connect\"></input>
 			<label>$(gettext 'Connect/Disconnect')</label>
-  			<action>\"CONNECT $HCI_DEV $BDA &\"</action>
+			<action>\"CONNECT $HCI_DEV $BDA &\"</action>
 		</button>
 	</hbox>
 </frame>" >> /tmp/panel
-elif [ "$DEV_PAIR" = "false" ] || [ "$DEV_PAIR" = '' ]; then
-echo "<frame>
-	<hbox>
-		<text use-markup=\"true\">
-		<label>\"<span color='#FF0000'>$(gettext '<b>Not paired</b>')</span>\"</label>
-		</text>
-		<button width-request=\"90\">
-			<input file stock=\"gtk-add\"></input>
-			<label>$(gettext 'Pair auto')</label>
-  			<action>\"PAIR $HCI_DEV $BDA &\"</action>
-		</button>
-		<button width-request=\"100\">
-			<input file stock=\"gtk-add\"></input>
-			<label>$(gettext 'Pair manual')</label>
-  			<action>ntf -w \"$(gettext 'Manual pair with device '$BDA'')\" \"$(gettext ' input string in therminal:\\n pair '$BDA'\\n and close therminal window')\" &</action>
-			<action>defaultterminal -e bluetoothctl</action>
-		</button>
-	</hbox>
-</frame>" >> /tmp/panel
-fi
-
 #check and add available device service
-dbus-send --system --print-reply --dest=org.bluez /org/bluez/$HCI_DEV/dev_$(echo $BDA | tr ':' '_') org.freedesktop.DBus.Properties.Get string:org.bluez.Device1 string:UUIDs | grep -E -o '"+[0-9|a-f]{8}-' | cut -c 6-9 > /tmp/${BDA}-info.lst || continue
-# if device not pair, service info not available on dbus, discovery service via sdptool
-if [ ! -s /tmp/${BDA}-info.lst ]; then
-	sdptool browse $BDA | awk -F[\(\)] '/0x11/ {print $2}'| sort -u | cut -c 3-6 > /tmp/${BDA}-info.lst || continue
-	
-fi
+bluetoothctl info $BDA| grep -o '(0000....-' | cut -c6-9 > /tmp/${BDA}-info.lst
 	while read S 
 	do
-#	 CH=$(grep -A4 $S /tmp/${BDA}-info.lst | awk '/Channel/ {print $2}')
 	case $S in
 1101) echo "<frame Serial Port>
  <button><label>$(gettext 'Connect/Disconnect')</label>
@@ -604,11 +560,33 @@ fi
  	<action>\"NET_CONNECT $HCI_DEV $BDA &\"</action>
  </button>
 </frame>" >> /tmp/panel ;;
-# и т д
 		esac
 	done < /tmp/${BDA}-info.lst
+
+elif [ "$DEV_PAIR" = "no" ] || [ "$DEV_PAIR" = '' ]; then
+echo "Device $BDA not paired"
+echo "<vbox>" >> /tmp/panel
+echo "<frame>
+	<hbox>
+		<text use-markup=\"true\">
+		<label>\"<span color='#FF0000'>$(gettext '<b>Not paired</b>')</span>\"</label>
+		</text>
+		<button width-request=\"90\">
+			<input file stock=\"gtk-add\"></input>
+			<label>$(gettext 'Pair auto')</label>
+  			<action>\"PAIR $HCI_DEV $BDA &\"</action>
+		</button>
+		<button width-request=\"100\">
+			<input file stock=\"gtk-add\"></input>
+			<label>$(gettext 'Pair manual')</label>
+  			<action>ntf -w \"$(gettext 'Manual pair with device '$BDA'')\" \"$(gettext ' input string in therminal:\\n pair '$BDA'\\n and close therminal window')\" &</action>
+			<action>defaultterminal -e bluetoothctl</action>
+		</button>
+	</hbox>
+</frame>" >> /tmp/panel
+fi
  echo "</vbox>" >> /tmp/panel
-done 
+done
 
  export show_bt="
 <window title=\"$(gettext 'Bluetooth manager')\" icon-name=\"gtk-about\">
@@ -619,7 +597,6 @@ done
 	</frame>
 </window>
 " 
-[ -s /tmp/panel ] || err_msg "$(gettext 'Bluetooth services not found.')"
+[ -s /tmp/panel ] || err_msg "$(gettext 'Bluetooth devices not found')"
 
-#gtkdialog --program=show_bt --center || err_msg "$(gettext 'Error in puppybt script!')"
 gtkdialog --program=show_bt --center 
